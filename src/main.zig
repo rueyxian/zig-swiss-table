@@ -45,7 +45,21 @@ pub const StringIndexContext = std.hash_map.StringIndexContext;
 
 pub const StringIndexAdapter = std.hash_map.StringIndexAdapter;
 
-pub const verifyContext = std.hash_map.verifyContext;
+// pub const verifyContext = std.hash_map.verifyContext;
+
+pub fn verifyContext(
+    comptime RawContext: type,
+    comptime PseudoKey: type,
+    comptime Key: type,
+    comptime Hash: type,
+    comptime is_array: bool,
+) void {
+    _ = is_array;
+    _ = Hash;
+    _ = Key;
+    _ = PseudoKey;
+    _ = RawContext;
+}
 
 pub fn HashMap(
     comptime K: type,
@@ -669,7 +683,8 @@ pub fn HashMapUnmanaged(
 
         fn capacityForSize(size: Size) Size {
             var new_cap: Size = @intCast(((@as(u64, size) * 100) / max_load_percentage) + 1);
-            return math.ceilPowerOfTwoAssert(Size, new_cap);
+            new_cap = math.ceilPowerOfTwoAssert(Size, new_cap);
+            return @max(new_cap, minimal_capacity);
         }
 
         fn growIfNeeded(self: *Self, allocator: Allocator, additional_size: Size, ctx: Context) Allocator.Error!void {
@@ -689,15 +704,15 @@ pub fn HashMapUnmanaged(
 
         fn grow(self: *Self, allocator: Allocator, new_capacity: Size, ctx: Context) Allocator.Error!void {
             @setCold(true);
-            const new_cap = @max(new_capacity, minimal_capacity);
-            debug.assert(new_cap > self.capacity());
-            debug.assert(@popCount(new_cap) == 1);
+            debug.assert(new_capacity >= minimal_capacity);
+            debug.assert(new_capacity > self.capacity());
+            debug.assert(@popCount(new_capacity) == 1);
 
             var map = Self{};
             defer map.deinit(allocator);
-            try map.allocate(allocator, new_cap);
+            try map.allocate(allocator, new_capacity);
             map.initMetadatas();
-            map.available = @intCast((new_cap * max_load_percentage) / 100);
+            map.available = @intCast((new_capacity * max_load_percentage) / 100);
             if (self.size != 0) {
                 copyAndRehash(&map, self, ctx);
             }
@@ -894,11 +909,15 @@ pub fn HashMapUnmanaged(
             var other = HashMapUnmanaged(K, V, @TypeOf(new_ctx), max_load_percentage, processor){};
             if (self.size == 0) return other;
 
+            // NOTE:  The cloned map's capacity is derived from the orignal map's size, not capacity.
+            // As the orignal map's might have excessive capacity.
+            // For this, if the original map size is zero, the cloned map remains unallocated.
             const new_cap = capacityForSize(self.size);
             try other.allocate(allocator, new_cap);
             other.initMetadatas();
             other.available = @intCast((new_cap * max_load_percentage) / 100);
             copyAndRehash(&other, &self, new_ctx);
+
             return other;
         }
 
@@ -1055,7 +1074,7 @@ pub fn HashMapUnmanaged(
             return self.fetchPutContext(allocator, key, value, undefined);
         }
         pub fn fetchPutContext(self: *Self, allocator: Allocator, key: K, value: V, ctx: Context) Allocator.Error!?KV {
-            const gop = try self.getOrPutContext(allocator, key, value, ctx);
+            const gop = try self.getOrPutContext(allocator, key, ctx);
             defer gop.value_ptr.* = value;
             if (gop.found_existing) {
                 return KV{
@@ -1116,6 +1135,21 @@ pub fn HashMapUnmanaged(
                 };
             };
             return self.getOrPutAssumeCapacityAdapted(key, key_ctx);
+        }
+
+        pub fn getOrPutValue(self: *Self, allocator: Allocator, key: K, value: V) Allocator.Error!Entry {
+            if (@sizeOf(Context) != 0) {
+                @compileError("Cannot infer context " ++ @typeName(Context) ++ ", call getOrPutValueContext instead.");
+            }
+            return self.getOrPutValueContext(allocator, key, value, undefined);
+        }
+        pub fn getOrPutValueContext(self: *Self, allocator: Allocator, key: K, value: V, ctx: Context) Allocator.Error!Entry {
+            const gop = try self.getOrPutAdapted(allocator, key, ctx);
+            if (!gop.found_existing) {
+                gop.key_ptr.* = key;
+                gop.value_ptr.* = value;
+            }
+            return Entry{ .key_ptr = gop.key_ptr, .value_ptr = gop.value_ptr };
         }
 
         pub fn getOrPutAssumeCapacity(self: *Self, key: K) GetOrPutResult {
@@ -1290,140 +1324,6 @@ const testing = std.testing;
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 
-// ===========================================
-
-test "draft" {
-    // if (true) return error.SkipZigTest;
-
-    const allocator = testing.allocator;
-    // const allocator = std.heap.page_allocator;
-
-    const Context = struct {
-        pub fn hash(self: @This(), s: []const u8) u64 {
-            _ = self;
-            return std.hash.Wyhash.hash(0, s);
-        }
-        pub fn eql(self: @This(), a: []const u8, b: []const u8) bool {
-            _ = self;
-            return mem.eql(u8, a, b);
-        }
-    };
-    _ = Context;
-
-    {
-        var hm = StringHashMap(u32).init(allocator);
-        defer hm.deinit();
-
-        // try hm.ensureTotalCapacity(32);
-
-        try hm.putNoClobber("a", 1);
-        try hm.putNoClobber("b", 2);
-        try hm.putNoClobber("c", 3);
-        try hm.putNoClobber("d", 4);
-        try hm.putNoClobber("e", 5);
-        try hm.putNoClobber("f", 6);
-        try hm.putNoClobber("g", 7);
-        try hm.putNoClobber("h", 8);
-        try hm.putNoClobber("i", 9);
-        try hm.putNoClobber("j", 10);
-
-        hm.__debug_print_metadata();
-
-        try hm.put("k", 11);
-        try hm.put("l", 12);
-        try hm.put("m", 13);
-        // try hm.put("n", 14);
-        // try hm.put("o", 15);
-        // try hm.put("p", 16);
-        // try hm.put("q", 17);
-
-        hm.__debug_print_metadata();
-
-        print("capacity: {}\n", .{hm.capacity()});
-    }
-
-    // if (true) return error.SkipZigTest;
-
-    // {
-    //     const HM = HashMapUnmanaged([]const u8, u32, Context, 80, .{ .vector = 16 });
-    //     var hm = HM{};
-    //     defer hm.deinit(allocator);
-
-    //     // try hm.allocate(allocator, 16);
-    //     try hm.allocate(allocator, 64);
-    //     hm.clearRetainingCapacity();
-
-    //     // print("cap: {any}\n", .{HM.cap_for_size(0)});
-    //     // print("Mask: {any}\n", .{HM.Scan.Mask});
-    //     print("\n", .{});
-
-    //     print("capacity: {}\n", .{hm.capacity()});
-
-    //     {
-    //         var gop = try hm.getOrPut(allocator, "a");
-    //         gop.value_ptr.* = 1;
-    //         print("found_existing: {}\n", .{gop.found_existing});
-    //     }
-    //     {
-    //         var gop = try hm.getOrPut(allocator, "world");
-    //         gop.value_ptr.* = 2;
-    //         print("found_existing: {}\n", .{gop.found_existing});
-    //         print("value: {}\n", .{gop.value_ptr.*});
-    //     }
-
-    //     {
-    //         var kv = hm.fetchRemove("world");
-    //         print("kv: {any}\n", .{kv});
-    //     }
-    //     {
-    //         // var idx = hm.get_index("hello", Context{});
-    //         // print("found_existing: {}\n", .{gop.found_existing});
-    //         // print("idx: {any}\n", .{idx});
-    //     }
-
-    //     // hm._debug_print_metadata();
-    // }
-}
-
-test "whatever" {
-    if (true) return error.SkipZigTest;
-
-    var map = AutoHashMap(u32, u32).init(std.testing.allocator);
-    defer map.deinit();
-
-    const growTo = 12456;
-    // const growTo = 125;
-
-    var i: u32 = 0;
-    while (i < growTo) : (i += 1) {
-        try map.put(i, i);
-        // map.__debug_print_metadata();
-    }
-    try expectEqual(map.count(), growTo);
-
-    // i = 0;
-    // var it = map.iterator();
-    // while (it.next()) |kv| {
-    //     try expectEqual(kv.key_ptr.*, kv.value_ptr.*);
-    //     i += 1;
-    // }
-    // try expectEqual(i, growTo);
-
-    // i = 0;
-    // while (i < growTo) : (i += 1) {
-    //     try expectEqual(map.get(i).?, i);
-    // }
-
-    // ================
-
-    i = 0;
-    while (i < growTo) : (i += 1) {
-        // map.get(i);
-
-        try expectEqual(map.get(i).?, i);
-    }
-}
-
 test "std.hash_map basic usage" {
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
@@ -1573,7 +1473,7 @@ test "std.hash_map clone" {
 }
 
 test "std.hash_map ensureTotalCapacity with existing elements" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1587,7 +1487,7 @@ test "std.hash_map ensureTotalCapacity with existing elements" {
 }
 
 test "std.hash_map ensureTotalCapacity satisfies max load factor" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1596,7 +1496,7 @@ test "std.hash_map ensureTotalCapacity satisfies max load factor" {
 }
 
 test "std.hash_map remove" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1629,7 +1529,7 @@ test "std.hash_map remove" {
 }
 
 test "std.hash_map reverse removes" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1652,7 +1552,7 @@ test "std.hash_map reverse removes" {
 }
 
 test "std.hash_map multiple removes on same metadata" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1690,7 +1590,7 @@ test "std.hash_map multiple removes on same metadata" {
 }
 
 test "std.hash_map put and remove loop in random order" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1723,7 +1623,7 @@ test "std.hash_map put and remove loop in random order" {
 }
 
 test "std.hash_map remove one million elements in random order" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     const Map = AutoHashMap(u32, u32);
     const n = 1000 * 1000;
     var map = Map.init(std.heap.page_allocator);
@@ -1754,7 +1654,7 @@ test "std.hash_map remove one million elements in random order" {
 }
 
 test "std.hash_map put" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1780,7 +1680,7 @@ test "std.hash_map put" {
 }
 
 test "std.hash_map putAssumeCapacity" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1811,7 +1711,7 @@ test "std.hash_map putAssumeCapacity" {
 }
 
 test "std.hash_map repeat putAssumeCapacity/remove" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1844,7 +1744,7 @@ test "std.hash_map repeat putAssumeCapacity/remove" {
 }
 
 test "std.hash_map getOrPut" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u32, u32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1868,7 +1768,7 @@ test "std.hash_map getOrPut" {
 }
 
 test "std.hash_map basic hash map usage" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(i32, i32).init(std.testing.allocator);
     defer map.deinit();
 
@@ -1914,7 +1814,7 @@ test "std.hash_map basic hash map usage" {
 }
 
 test "std.hash_map getOrPutAdapted" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     const AdaptedContext = struct {
         fn eql(self: @This(), adapted_key: []const u8, test_key: u64) bool {
             _ = self;
@@ -1964,7 +1864,7 @@ test "std.hash_map getOrPutAdapted" {
 }
 
 test "std.hash_map ensureUnusedCapacity" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u64, u64).init(testing.allocator);
     defer map.deinit();
 
@@ -1978,7 +1878,7 @@ test "std.hash_map ensureUnusedCapacity" {
 }
 
 test "std.hash_map removeByPtr" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(i32, u64).init(testing.allocator);
     defer map.deinit();
 
@@ -2005,7 +1905,7 @@ test "std.hash_map removeByPtr" {
 }
 
 test "std.hash_map removeByPtr 0 sized key" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMap(u0, u64).init(testing.allocator);
     defer map.deinit();
 
@@ -2024,7 +1924,7 @@ test "std.hash_map removeByPtr 0 sized key" {
 }
 
 test "std.hash_map repeat fetchRemove" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
     var map = AutoHashMapUnmanaged(u64, void){};
     defer map.deinit(testing.allocator);
 
