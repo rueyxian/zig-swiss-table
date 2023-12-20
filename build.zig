@@ -1,47 +1,60 @@
 const std = @import("std");
+const fmt = std.fmt;
 
-// Although this function looks imperative, note that its job is to
-// declaratively construct a build graph that will be executed by an external
-// runner.
-pub fn build(b: *std.Build) void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
-
-    // Standard optimization options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
-    // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "swiss_table",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
+    _ = b.addModule("swiss_table", .{ .source_file = .{ .path = "src/swiss_table.zig" } });
 
-    // This declares intent for the library to be installed into the standard
-    // location when the user invokes the "install" step (the default step when
-    // running `zig build`).
-    b.installArtifact(lib);
+    const mod_swiss_table = b.createModule(.{ .source_file = .{ .path = "src/swiss_table.zig" } });
 
-    // Creates a step for unit testing. This only builds the test executable
-    // but does not run it.
-    const main_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
+    {
+        const step_test = b.step("test", "Run unit tests");
+        const cmpl = b.addTest(.{
+            .root_source_file = .{ .path = "src/swiss_table.zig" },
+            .target = target,
+            .optimize = optimize,
+        });
+        const run_atf = b.addRunArtifact(cmpl);
+        step_test.dependOn(&run_atf.step);
+    }
 
-    const run_main_tests = b.addRunArtifact(main_tests);
-
-    // This creates a build step. It will be visible in the `zig build --help` menu,
-    // and can be selected like this: `zig build test`
-    // This will evaluate the `test` step rather than the default, which is "install".
-    const test_step = b.step("test", "Run library tests");
-    test_step.dependOn(&run_main_tests.step);
+    const step_build_all = b.step("build_all_demo", "Build all demo");
+    const step_run_all = b.step("run_all_demo", "Run all demo");
+    for ([_]struct {
+        name: []const u8,
+        path: []const u8,
+    }{
+        .{ .name = "unmanaged", .path = "src/demo/unmanaged.zig" },
+        .{ .name = "auto", .path = "src/demo/auto.zig" },
+        .{ .name = "string", .path = "src/demo/string.zig" },
+    }) |opt| {
+        const step_run = blk: {
+            const name = try fmt.allocPrint(b.allocator, "run_demo_{s}", .{opt.name});
+            const desciption = try fmt.allocPrint(b.allocator, "Run `{s}`", .{opt.path});
+            break :blk b.step(name, desciption);
+        };
+        const step_build = blk: {
+            const name = try fmt.allocPrint(b.allocator, "build_demo_{s}", .{opt.name});
+            const description = try fmt.allocPrint(b.allocator, "Build `{s}`", .{opt.path});
+            break :blk b.step(name, description);
+        };
+        const cmpl = blk: {
+            const cmpl = b.addExecutable(.{
+                .name = opt.name,
+                .root_source_file = .{ .path = opt.path },
+                .target = target,
+                .optimize = optimize,
+            });
+            cmpl.addModule("swiss_table", mod_swiss_table);
+            break :blk cmpl;
+        };
+        const run_atf = b.addRunArtifact(cmpl);
+        const build_atf = b.addInstallArtifact(cmpl, .{});
+        step_run.dependOn(&run_atf.step);
+        step_run_all.dependOn(&run_atf.step);
+        step_build.dependOn(&build_atf.step);
+        step_build_all.dependOn(&build_atf.step);
+    }
 }
